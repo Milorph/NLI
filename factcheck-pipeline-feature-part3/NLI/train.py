@@ -9,6 +9,7 @@ MNLI-matched macro-F1.
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 from dataclasses import dataclass
 from typing import Dict
@@ -21,6 +22,13 @@ from transformers import (
     DataCollatorWithPadding,
     Trainer,
     TrainingArguments,
+)
+
+
+_TRAINER_TOKENIZER_KW = (
+    "processing_class"
+    if "processing_class" in inspect.signature(Trainer.__init__).parameters
+    else "tokenizer"
 )
 
 from NLI import LABEL_ID2NAME
@@ -109,9 +117,9 @@ def train(cfg: TrainConfig) -> str:
         args=args,
         train_dataset=train_tok,
         eval_dataset=dev_tok,
-        tokenizer=nli.tokenizer,
         data_collator=DataCollatorWithPadding(nli.tokenizer),
         compute_metrics=_compute_metrics,
+        **{_TRAINER_TOKENIZER_KW: nli.tokenizer},
     )
 
     trainer.train()
