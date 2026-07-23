@@ -90,12 +90,16 @@ def classify_evidence() -> Tuple[Dataset, Dataset, Dataset]:
             - Dataset: Test set
     """
 
-    dt = rm.load_resource(f'{_classify_evidence_filename}')
-    if dt is not None:
+    cached = rm.load_resource(f'{_classify_evidence_filename}')
+    if cached is not None:
 
         print('load by pickle')
-        return dt['train'], dt['dev'], dt['test']
-    
+        return (
+            Dataset.from_dict(cached['train']),
+            Dataset.from_dict(cached['dev']),
+            Dataset.from_dict(cached['test']),
+        )
+
     main_dt = load_dataset('mteb/fever')
     corpus_dt = load_dataset('mteb/fever', 'corpus')
     queries_dt = load_dataset('mteb/fever', 'queries')
@@ -118,6 +122,10 @@ def classify_evidence() -> Tuple[Dataset, Dataset, Dataset]:
     )
 
     print('save as pickle')
-    rm.save_resource(main_dt, f'{_classify_evidence_filename}')
+    # pickling main_dt directly bakes in an absolute path to the local
+    # HF datasets cache (Arrow memory-map), which breaks on anyone else's
+    # machine. dumping plain dicts instead makes the pickle self-contained.
+    portable = {split: main_dt[split].to_dict() for split in main_dt}
+    rm.save_resource(portable, f'{_classify_evidence_filename}')
 
     return main_dt['train'], main_dt['dev'], main_dt['test']

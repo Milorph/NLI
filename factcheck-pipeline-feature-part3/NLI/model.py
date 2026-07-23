@@ -1,16 +1,16 @@
 """Cross-encoder NLI model wrapper.
 
 Following Reimers & Gurevych (Sentence-BERT, 2019), a *cross-encoder* is
-the right architecture when we want a single {entail, neutral, contradict}
-label for a specific (premise, hypothesis) pair. The two sentences are
-fed jointly through BERT with a [SEP] token; the [CLS] hidden state is
+the right architecture when I want a single {entail, neutral, contradict}
+label for a specific (premise, hypothesis) pair. The two sentences get
+fed jointly through BERT with a [SEP] token; the [CLS] hidden state gets
 projected to 3 logits.
 
-We deliberately use HuggingFace's ``AutoModelForSequenceClassification``
-so the checkpoint transparently loads either:
+I'm using HuggingFace's ``AutoModelForSequenceClassification`` on purpose
+so the checkpoint can load either:
     * a raw BERT / RoBERTa backbone (train from a general MLM), or
-    * a pretrained NLI cross-encoder such as
-      ``cross-encoder/nli-deberta-v3-base`` (fine-tune on our data).
+    * a pretrained NLI cross-encoder like
+      ``cross-encoder/nli-deberta-v3-base`` (just fine-tune it further).
 """
 
 from __future__ import annotations
@@ -71,6 +71,11 @@ def build_model(
         id2label=LABEL_ID2NAME,
         label2id=LABEL_NAME2ID,
         ignore_mismatched_sizes=True,
+        # deberta's hub checkpoint is fp16 by default and loads that way
+        # (even the fresh classifier head) unless I force it here.
+        # training args' bf16/fp16 flags only affect autocast, not this --
+        # without it deberta trained in raw fp16 and just quietly collapsed
+        torch_dtype="float32",
     )
     return NLIModel(tokenizer=tokenizer, model=model, max_length=max_length)
 

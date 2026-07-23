@@ -1,15 +1,12 @@
-"""Pipeline-ready inference for the NLI stage.
+"""Inference for my part of the pipeline (NLI).
 
-Feature 3's job in the fact-checking pipeline is to take:
-    * a claim (from Feature 1 - Claim Extraction), and
-    * one or more evidence passages (from Feature 2 - Evidence Retrieval)
-and produce, for each claim-evidence pair, a probability distribution
-over {entailment, neutral, contradiction}. The aggregation stage
-(Feature 4, Kusuma) consumes those distributions to make the final
-SUPPORTS / NOT ENOUGH INFO / REFUTES call.
+Takes a claim and a bunch of evidence passages, scores each pair, and
+spits out a probability over {entailment, neutral, contradiction}. The
+aggregation step downstream turns that into SUPPORTS / NOT ENOUGH INFO
+/ REFUTES.
 
-Consistent with training, the evidence text is treated as the premise
-and the claim as the hypothesis.
+Evidence goes in as the premise, claim as the hypothesis, same as how
+I trained it.
 """
 
 from __future__ import annotations
@@ -54,6 +51,24 @@ class NLIPredictor:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.model.to(device)
         self.model.model.eval()
+
+    @classmethod
+    def from_nli_model(
+        cls,
+        nli_model: NLIModel,
+        device: Optional[str] = None,
+        batch_size: int = 32,
+    ) -> "NLIPredictor":
+        """Wrap an already-loaded NLIModel, e.g. one unpickled via
+        resource_manager.load_resource, without touching disk."""
+        predictor = cls.__new__(cls)
+        predictor.model = nli_model
+        predictor.batch_size = batch_size
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        predictor.model.model.to(device)
+        predictor.model.model.eval()
+        return predictor
 
     def _softmax(self, logits: torch.Tensor) -> np.ndarray:
         return torch.softmax(logits, dim=-1).cpu().numpy()

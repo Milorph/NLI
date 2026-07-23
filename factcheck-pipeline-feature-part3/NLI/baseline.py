@@ -1,13 +1,11 @@
 """TF-IDF + Logistic Regression baseline.
 
 Purpose: give us a floor to beat and validate the data / evaluation
-pipeline before the transformer training loop is trusted. The proposal
-explicitly asks for "documented data showing that our trained models
-perform significantly better than basic keyword matching or simple
-threshold rules" -- this is that basic model.
+pipeline before the transformer training loop is trusted.
 
 Features: word 1-2 grams on the concatenation `premise [SEP] hypothesis`
 plus a small overlap-word count feature. Classifier: multinomial LogReg.
+
 """
 
 from __future__ import annotations

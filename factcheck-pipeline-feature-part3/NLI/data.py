@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Dict, Literal, Optional, Tuple
 
-from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
+from datasets import Dataset, DatasetDict, Value, concatenate_datasets, load_dataset
 
 from common import dataset as common_dataset
 
@@ -48,6 +48,10 @@ def _clean(ds: Dataset) -> Dataset:
     drop = [c for c in ds.column_names if c not in keep]
     if drop:
         ds = ds.remove_columns(drop)
+    # cast label to plain int64 everywhere -- mnli/anli use ClassLabel,
+    # fever uses Value('int64'), and concatenate_datasets just refuses
+    # to mix the two
+    ds = ds.cast_column("label", Value("int64"))
     return ds
 
 
@@ -88,35 +92,54 @@ _FEVER_LABEL_MAP = {
 }
 
 
-def _fever_to_nli(row: Dict) -> Dict:
-    """Cast a FEVER row into NLI shape: (evidence -> premise, claim -> hypothesis)."""
-    premise = row.get("corpus_text") or ""
-    if row.get("corpus_title"):
-        premise = f"{row['corpus_title']}. {premise}"
-    hypothesis = row.get("query_text") or ""
-    raw = row.get("label") or row.get("score") or row.get("verdict")
+def _fever_gold_to_nli(row: Dict) -> Dict:
+    """Cast a copenlu/fever_gold_evidence row into NLI shape.
+
+    ``evidence`` is a list of [wiki_title, sentence_id, sentence_text]
+    triples; I join their sentence texts together as the premise. Claim
+    is the hypothesis.
+    """
+    triples = row.get("evidence") or []
+    sentences = [t[2] for t in triples if t and len(t) > 2 and t[2]]
+    premise = " ".join(sentences)
+    hypothesis = row.get("claim") or ""
+    raw = row.get("label")
     label = _FEVER_LABEL_MAP.get(str(raw).upper(), -1) if raw is not None else -1
     return {"premise": premise, "hypothesis": hypothesis, "label": label}
 
 
 def load_fever_as_nli() -> DatasetDict:
-    """FEVER cast to NLI. Rows without evidence text are dropped."""
-    train, dev, test = common_dataset.classify_evidence()
+    """FEVER (claim + gold evidence + verdict) cast to NLI shape.
+
+    Loads ``copenlu/fever_gold_evidence`` directly rather than going
+    through ``common.dataset.classify_evidence()`` -- that shared
+    function is wired to a retrieval-relevance variant of FEVER
+    (``mteb/fever``) for Part 2's evidence-retrieval use and carries no
+    verdict labels, so it can't serve Part 3's NLI evaluation.
+    """
+    raw = load_dataset("copenlu/fever_gold_evidence")
 
     def cast(ds: Dataset) -> Dataset:
         cols = ds.column_names
-        ds = ds.map(_fever_to_nli, remove_columns=cols)
+        ds = ds.map(_fever_gold_to_nli, remove_columns=cols)
         return _clean(ds)
 
     return DatasetDict({
-        "train": cast(train),
-        "dev": cast(dev),
-        "test": cast(test),
+        "train": cast(raw["train"]),
+        "dev": cast(raw["validation"]),
+        "test": cast(raw["test"]),
     })
 
 
+def _cap_train(train: Dataset, max_train_examples: Optional[int], seed: int) -> Dataset:
+    """Shuffle and cap a train split to at most ``max_train_examples`` rows."""
+    if not max_train_examples or len(train) <= max_train_examples:
+        return train
+    return train.shuffle(seed=seed).select(range(max_train_examples))
+
+
 def load_nli(
-    source: Literal["mnli", "anli", "snli", "fever", "mnli+anli"] = "mnli",
+    source: Literal["mnli", "anli", "snli", "fever", "mnli+anli", "mnli+anli+fever"] = "mnli",
     anli_round: Literal[1, 2, 3] = 1,
     max_train_examples: Optional[int] = None,
     seed: int = 42,
@@ -126,22 +149,29 @@ def load_nli(
     ``mnli+anli`` concatenates MNLI train with all three ANLI rounds so the
     model sees both distributions during fine-tuning (the standard recipe
     from the Adversarial NLI paper).
+
+    ``max_train_examples`` caps (after shuffling) the train split only,
+    for every source -- used for quick smoke tests.
     """
     if source == "mnli":
         d = load_mnli()
-        return d["train"], d["validation_matched"], d["validation_mismatched"]
+        train = _cap_train(d["train"], max_train_examples, seed)
+        return train, d["validation_matched"], d["validation_mismatched"]
 
     if source == "anli":
         d = load_anli(anli_round)
-        return d["train"], d["dev"], d["test"]
+        train = _cap_train(d["train"], max_train_examples, seed)
+        return train, d["dev"], d["test"]
 
     if source == "snli":
         d = load_snli()
-        return d["train"], d["validation"], d["test"]
+        train = _cap_train(d["train"], max_train_examples, seed)
+        return train, d["validation"], d["test"]
 
     if source == "fever":
         d = load_fever_as_nli()
-        return d["train"], d["dev"], d["test"]
+        train = _cap_train(d["train"], max_train_examples, seed)
+        return train, d["dev"], d["test"]
 
     if source == "mnli+anli":
         mnli = load_mnli()
@@ -149,8 +179,17 @@ def load_nli(
         for r in (1, 2, 3):
             parts.append(load_anli(r)["train"])
         train = concatenate_datasets(parts).shuffle(seed=seed)
-        if max_train_examples:
-            train = train.select(range(min(max_train_examples, len(train))))
+        train = _cap_train(train, max_train_examples, seed)
+        return train, mnli["validation_matched"], mnli["validation_mismatched"]
+
+    if source == "mnli+anli+fever":
+        mnli = load_mnli()
+        parts = [mnli["train"]]
+        for r in (1, 2, 3):
+            parts.append(load_anli(r)["train"])
+        parts.append(load_fever_as_nli()["train"])
+        train = concatenate_datasets(parts).shuffle(seed=seed)
+        train = _cap_train(train, max_train_examples, seed)
         return train, mnli["validation_matched"], mnli["validation_mismatched"]
 
     raise ValueError(f"Unknown source: {source}")
